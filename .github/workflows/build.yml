@@ -1,0 +1,74 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '手动指定版本号（格式 年月日.自增号，如 20260815.3），留空自动生成'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本号（年月日.自增号）
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "$(Get-Date -Format 'yyyyMMdd').$env:GITHUB_RUN_NUMBER" }
+          if ($v -notmatch '^\d{8}\.\d+$') { throw "非法版本号: $v" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: 生成 AssemblyInfo.cs
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $lines = @(
+            'using System.Reflection;',
+            '[assembly: AssemblyTitle("梦幻西游缓存清理工具")]',
+            "[assembly: AssemblyVersion(`"$v`")]",
+            "[assembly: AssemblyFileVersion(`"$v`")]"
+          )
+          $lines | Set-Content -Encoding utf8 AssemblyInfo.cs
+
+      - name: 编译（.NET Framework 自带 csc）
+        shell: pwsh
+        run: |
+          $fw = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
+          & "$fw\csc.exe" /nologo /target:winexe /codepage:65001 /optimize+ /debug- `
+            /out:MHXYTempCleaner.exe `
+            /r:"$fw\System.dll" /r:"$fw\System.Core.dll" /r:"$fw\System.Drawing.dll" /r:"$fw\System.Windows.Forms.dll" `
+            AssemblyInfo.cs '梦幻清理缓存.cs'
+          if ($LASTEXITCODE -ne 0) { throw "编译失败" }
+          if (-not (Test-Path MHXYTempCleaner.exe)) { throw "未生成 MHXYTempCleaner.exe" }
+
+      - name: 自签名证书签名
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Subject 'CN=MHXYTempCleaner' -Type CodeSigningCert `
+            -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
+          $pwd = ConvertTo-SecureString 'mhxy' -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath "$env:RUNNER_TEMP\mhxy.pfx" -Password $pwd | Out-Null
+          $tool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $tool) { throw "未找到 signtool.exe" }
+          & $tool.FullName sign /f "$env:RUNNER_TEMP\mhxy.pfx" /p mhxy /fd SHA256 MHXYTempCleaner.exe
+          if ($LASTEXITCODE -ne 0) { throw "签名失败" }
+
+      - name: 发布 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "v${{ steps.ver.outputs.version }}"
+          if (gh release view $tag 2>$null) { gh release delete $tag --yes --cleanup-tag }
+          gh release create $tag MHXYTempCleaner.exe `
+            --repo $env:GITHUB_REPOSITORY --title $tag --notes "自动构建 v${{ steps.ver.outputs.version }}"

@@ -1,6 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
+using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -95,6 +100,12 @@ namespace MhCleaner
                 bool roOk = !File.Exists(ro) && File.Exists(keep2) && Cleaner.FilesDeleted == 1 && Cleaner.Failures == 0;
                 Directory.Delete(cnDir, true);
                 if (!roOk) ok = "FAIL";
+
+                // 版本号格式与比较逻辑：年月日.自增号
+                if (!VersionUtil.IsValid("20260815.1")) ok = "FAIL";
+                if (!VersionUtil.IsNewer("20260815.3", "20260815.2")) ok = "FAIL";
+                if (VersionUtil.IsNewer("20260815.2", "20260815.3")) ok = "FAIL";
+                if (VersionUtil.IsNewer("20250815.9", "20260815.1")) ok = "FAIL";
             }
             finally { Directory.Delete(dir, true); }
             File.WriteAllText(Path.Combine(Path.GetTempPath(), "mh_selftest_result.txt"), ok);
@@ -102,10 +113,94 @@ namespace MhCleaner
         }
     }
 
+    // 版本号格式：年月日.自增号，如 20260815.3
+    static class VersionUtil
+    {
+        public static bool Parse(string s, out int[] v)
+        {
+            v = new int[0];
+            if (string.IsNullOrEmpty(s)) return false;
+            string[] p = s.Split('.');
+            if (p.Length != 2) return false;
+            int a, b;
+            if (!int.TryParse(p[0], out a) || !int.TryParse(p[1], out b)) return false;
+            v = new[] { a, b };
+            return true;
+        }
+
+        public static bool IsValid(string s) { int[] v; return Parse(s, out v); }
+
+        public static bool IsNewer(string remote, string current)
+        {
+            int[] r, c;
+            if (!Parse(remote, out r) || !Parse(current, out c)) return false;
+            return r[0] > c[0] || (r[0] == c[0] && r[1] > c[1]);
+        }
+    }
+
+    // 更新检查：国内加速镜像优先（ghproxy 系），直连 GitHub 兜底
+    static class Updater
+    {
+        public const string Repo = "qq458249269/MHXYTempCleaner";
+        public static readonly string[] Mirrors =
+        {
+            "https://mirror.ghproxy.com/",
+            "https://ghproxy.net/",
+            "https://ghfast.top/",
+            "https://gh-proxy.com/",
+        };
+
+        // 返回 {版本标签, 下载地址, 加速前缀}；加速前缀为空表示用的是直连
+        public static string[] GetLatestReleaseInfo()
+        {
+            List<string> prefixes = new List<string>(Mirrors);
+            prefixes.Add("");
+            string url = "https://api.github.com/repos/" + Repo + "/releases/latest";
+            Exception last = null;
+            foreach (string p in prefixes)
+            {
+                try
+                {
+                    string json = Fetch(p + url);
+                    string tag = Extract(json, "tag_name");
+                    string dl = Extract(json, "browser_download_url");
+                    if (tag.Length == 0 || dl.Length == 0) throw new Exception("更新服务器响应格式异常");
+                    return new[] { tag, dl, p };
+                }
+                catch (Exception ex) { last = ex; }
+            }
+            throw last ?? new Exception("无法连接更新服务器");
+        }
+
+        static string Fetch(string fullUrl)
+        {
+            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(fullUrl);
+            req.Timeout = 8000;
+            req.ReadWriteTimeout = 8000;
+            req.UserAgent = "MHXYTempCleaner/" + Application.ProductVersion;
+            using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+            {
+                using (StreamReader sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                    return sr.ReadToEnd();
+            }
+        }
+
+        // 从 JSON 里取第一个 "key" 的值（更新响应简单，不需要完整 JSON 库）
+        static string Extract(string json, string key)
+        {
+            int i = json.IndexOf(key);
+            if (i < 0) return "";
+            int q1 = json.IndexOf('"', i + key.Length);
+            int q2 = q1 < 0 ? -1 : json.IndexOf('"', q1 + 1);
+            if (q2 < 0) return "";
+            return json.Substring(q1 + 1, q2 - q1 - 1);
+        }
+    }
+
     class MainForm : Form
     {
         TextBox txtDir, txtLog;
-        CheckBox chkAuto, chkAutoStart;
+        CheckBox chkAuto, chkAutoStart, chkUpdate;
         Button btnClean;
         string cfgPath;
 
@@ -119,13 +214,14 @@ namespace MhCleaner
 
         public MainForm()
         {
-            Text = "梦幻西游缓存清理工具";
+            Text = "梦幻西游缓存清理工具 v" + Application.ProductVersion;
             ClientSize = new Size(660, 400);
             MinimumSize = new Size(500, 300);
             cfgPath = GetCfgPath();
 
             chkAuto = new CheckBox { Text = "启动时自动清理", AutoSize = true, Checked = true, Anchor = AnchorStyles.Left };
             chkAutoStart = new CheckBox { Text = "开机自启动", AutoSize = true, Anchor = AnchorStyles.Left };
+            chkUpdate = new CheckBox { Text = "自动检查更新", AutoSize = true, Checked = true, Anchor = AnchorStyles.Left };
             txtDir = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right };
             Button btnBrowse = new Button { Text = "浏览...", Anchor = AnchorStyles.Right };
             btnClean = new Button { Text = "一键清理", Anchor = AnchorStyles.Right };
@@ -136,14 +232,15 @@ namespace MhCleaner
 
             TableLayoutPanel top = new TableLayoutPanel
             {
-                Dock = DockStyle.Top, Height = 36, ColumnCount = 5, Padding = new Padding(2, 4, 2, 0)
+                Dock = DockStyle.Top, Height = 36, ColumnCount = 6, Padding = new Padding(2, 4, 2, 0)
             };
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            top.Controls.Add(chkAuto); top.Controls.Add(chkAutoStart); top.Controls.Add(txtDir); top.Controls.Add(btnBrowse); top.Controls.Add(btnClean);
+            top.Controls.Add(chkAuto); top.Controls.Add(chkAutoStart); top.Controls.Add(chkUpdate); top.Controls.Add(txtDir); top.Controls.Add(btnBrowse); top.Controls.Add(btnClean);
 
             TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -154,6 +251,7 @@ namespace MhCleaner
 
             chkAuto.CheckedChanged += delegate { SaveConfig(); };
             chkAutoStart.CheckedChanged += delegate { SaveAutoStart(); };
+            chkUpdate.CheckedChanged += delegate { SaveConfig(); };
             LoadConfig();
             LoadAutoStart();
             Shown += delegate
@@ -163,6 +261,7 @@ namespace MhCleaner
                     AppendLog("[自动执行] 启动自动清理...");
                     RunClean();
                 }
+                if (chkUpdate.Checked) CheckUpdate();
             };
             FormClosing += delegate { SaveConfig(); };
         }
@@ -208,6 +307,32 @@ namespace MhCleaner
             }
         }
 
+        // 后台检查更新：国内加速镜像优先，直连 GitHub 兜底；有新版本时询问是否跳转下载
+        void CheckUpdate()
+        {
+            new Thread(delegate()
+            {
+                try
+                {
+                    string[] info = Updater.GetLatestReleaseInfo();
+                    // 有可用镜像时用同一镜像加速下载链接，直连则为原始地址
+                    string url = info[2] + info[1];
+                    string cur = Application.ProductVersion;
+                    if (!VersionUtil.IsNewer(info[0], cur)) return;
+                    BeginInvoke(new Action(delegate
+                    {
+                        string msg = "发现新版本 v" + info[0] + "（当前 v" + cur + "），是否前往下载？";
+                        if (MessageBox.Show(this, msg, "发现新版本", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                        {
+                            try { Process.Start(url); }
+                            catch (Exception ex) { AppendLog("[错误] 打开下载地址失败：" + ex.Message); }
+                        }
+                    }));
+                }
+                catch { } // 离线或镜像不可用时静默，不影响正常使用
+            }) { IsBackground = true }.Start();
+        }
+
         void AppendLog(string line)
         {
             if (InvokeRequired) { BeginInvoke(new Action(delegate { AppendLog(line); })); return; }
@@ -235,6 +360,7 @@ namespace MhCleaner
                     string k = line.Substring(0, i).Trim(), v = line.Substring(i + 1).Trim();
                     if (k == "dir") txtDir.Text = v;
                     else if (k == "auto") chkAuto.Checked = (v == "1");
+                    else if (k == "update") chkUpdate.Checked = (v == "1");
                 }
             }
             catch (Exception ex) { AppendLog("[错误] 配置读取失败：" + ex.Message); }
@@ -271,7 +397,7 @@ namespace MhCleaner
 
         void SaveConfig()
         {
-            try { File.WriteAllLines(cfgPath, new[] { "dir=" + txtDir.Text.Trim(), "auto=" + (chkAuto.Checked ? "1" : "0") }); }
+            try { File.WriteAllLines(cfgPath, new[] { "dir=" + txtDir.Text.Trim(), "auto=" + (chkAuto.Checked ? "1" : "0"), "update=" + (chkUpdate.Checked ? "1" : "0") }); }
             catch (Exception ex) { AppendLog("[错误] 配置保存失败：" + ex.Message); }
         }
     }
