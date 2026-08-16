@@ -24,7 +24,7 @@ csc /nologo /target:winexe /codepage:65001 /optimize+ /debug- /out:梦幻清理�
   梦幻清理缓存.cs AssemblyInfo.cs
 ```
 
-AssemblyInfo.cs 由构建流程生成（含 `AssemblyVersion` / `AssemblyFileVersion`）。
+AssemblyInfo.cs 由构建流程生成：`AssemblyVersion` 固定 `1.0.0.0`（AssemblyVersion 段上限 65535，年月日会溢出）；显示版本（`Application.ProductVersion`）取 `AssemblyFileVersion` = `年月日.自增号`。
 
 ## 自动构建（GitHub Actions）
 
