@@ -199,7 +199,8 @@ namespace MhCleaner
 
     class MainForm : Form
     {
-        TextBox txtDir, txtLog;
+        TextBox txtDir;
+        RichTextBox txtLog;
         CheckBox chkAuto, chkAutoStart, chkUpdate;
         Button btnClean;
         string cfgPath;
@@ -225,7 +226,8 @@ namespace MhCleaner
             txtDir = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right };
             Button btnBrowse = new Button { Text = "浏览...", Anchor = AnchorStyles.Right };
             btnClean = new Button { Text = "一键清理", Anchor = AnchorStyles.Right };
-            txtLog = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
+            txtLog = new RichTextBox { DetectUrls = true, ReadOnly = true, ScrollBars = RichTextBoxScrollBars.Vertical, Dock = DockStyle.Fill };
+            txtLog.LinkClicked += OnLogLinkClicked;
 
             btnBrowse.Click += OnBrowse;
             btnClean.Click += OnClean;
@@ -321,16 +323,17 @@ namespace MhCleaner
                     if (!VersionUtil.IsNewer(info[0], cur)) return;
                     BeginInvoke(new Action(delegate
                     {
-                        string msg = "发现新版本 v" + info[0] + "（当前 v" + cur + "），是否前往下载？";
-                        if (MessageBox.Show(this, msg, "发现新版本", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                        {
-                            try { Process.Start(url); }
-                            catch (Exception ex) { AppendLog("[错误] 打开下载地址失败：" + ex.Message); }
-                        }
+                        AppendLog("发现新版本 v" + info[0] + "（当前 v" + cur + "），点击下载新版本：" + url);
                     }));
                 }
                 catch { } // 离线或镜像不可用时静默，不影响正常使用
             }) { IsBackground = true }.Start();
+        }
+
+        void OnLogLinkClicked(object s, LinkClickedEventArgs e)
+        {
+            try { Process.Start(e.LinkText); }
+            catch (Exception ex) { AppendLog("[错误] 打开下载地址失败：" + ex.Message); }
         }
 
         void AppendLog(string line)

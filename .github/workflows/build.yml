@@ -74,3 +74,6 @@ jobs:
           if (gh release view $tag 2>$null) { gh release delete $tag --yes --cleanup-tag }
           gh release create $tag MHXYTempCleaner.exe `
             --repo $env:GITHUB_REPOSITORY --title $tag --notes "自动构建 v${{ steps.ver.outputs.version }}"
+          # 强制正式版（非 pre-release）：显式写 prerelease=false，防止某些 gh 版本误标 pre
+          $id = gh release view $tag --json id -q .id --repo $env:GITHUB_REPOSITORY
+          gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$id" -f prerelease=false
